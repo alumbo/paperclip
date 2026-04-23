@@ -70,6 +70,7 @@ import {
   normalizeContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
+import { formatContentDisposition } from "../lib/content-disposition.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import {
   applyIssueExecutionPolicyTransition,
@@ -3545,7 +3546,7 @@ export function issueRoutes(
     }
     const filename = attachment.originalFilename ?? "attachment";
     const disposition = isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
-    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
+    res.setHeader("Content-Disposition", formatContentDisposition(disposition, filename));
 
     object.stream.on("error", (err) => {
       next(err);
