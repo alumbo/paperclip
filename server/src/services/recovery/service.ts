@@ -646,6 +646,17 @@ function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "o
 }
 
 /**
+ * A routine-spawned execution instance is one fire of a recurring routine. It has no
+ * blocker by construction: its recovery *is* the next scheduled fire. Escalating one to
+ * `blocked` therefore strands it forever — `blocked` suppresses the wake, and the issue
+ * carries no blocker for a blocker query to surface. Cancelling is honest and
+ * self-cleaning: the next fire supersedes the instance.
+ */
+function isRoutineExecutionInstance(issue: Pick<typeof issues.$inferSelect, "originKind" | "originId">) {
+  return issue.originKind === "routine_execution" && Boolean(issue.originId);
+}
+
+/**
  * True when the issue's latest run was cancelled by a board operator (the
  * board cancel route stamps the attribution; interrupt-by-comment uses the
  * operator_interrupted error code). While such a run is the latest activity
@@ -3202,6 +3213,78 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  /**
+   * Cancels one stranded fire of a recurring routine instead of blocking it. The next
+   * scheduled fire supersedes this instance, so there is nothing for a blocker to point
+   * at and nothing for a recovery owner to take over.
+   */
+  async function cancelStrandedRoutineExecutionInstance(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: StrandedPreviousStatus;
+    latestRun: LatestIssueRun;
+  }) {
+    const updated = await issuesSvc.update(input.issue.id, { status: "cancelled" });
+    if (!updated) return null;
+
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun) ?? "";
+    await issuesSvc.addComment(
+      input.issue.id,
+      "This is one fire of a recurring routine and it lost its execution path before finishing." +
+        `${failureSummary} Cancelling it instead of blocking it: a scheduled routine has no blocker ` +
+        "by construction — its recovery is the next scheduled fire, which supersedes this instance.",
+      {},
+      {
+        authorType: "system",
+        presentation: compactRecoveryPresentation(
+          "Recovery: routine fire superseded — cancelled",
+        ),
+        metadata: {
+          version: 1,
+          sourceRunId: input.latestRun?.id ?? null,
+          sections: [{
+            title: "Recovery",
+            rows: [
+              { type: "key_value", label: "Cause", value: "routine_execution_superseded" },
+              { type: "key_value", label: "Previous status", value: input.previousStatus },
+              ...(input.latestRun
+                ? [{
+                    type: "run_link" as const,
+                    label: "Latest run",
+                    runId: input.latestRun.id,
+                    title: input.latestRun.status,
+                  }]
+                : []),
+            ],
+          }],
+        },
+      },
+    );
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: "cancelled",
+        previousStatus: input.previousStatus,
+        source: "recovery.cancel_stranded_routine_execution_instance",
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        latestRunErrorCode: input.latestRun?.errorCode ?? null,
+        originKind: input.issue.originKind,
+        originId: input.issue.originId,
+      },
+    });
+
+    return updated;
+  }
+
   async function existingBlockerIssueIds(companyId: string, issueId: string) {
     return db
       .select({ blockerIssueId: issueRelations.issueId })
@@ -3319,6 +3402,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
+        issue: input.issue,
+        previousStatus: input.previousStatus,
+        latestRun: input.latestRun,
+      });
+    }
+
+    if (isRoutineExecutionInstance(input.issue)) {
+      return cancelStrandedRoutineExecutionInstance({
         issue: input.issue,
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
