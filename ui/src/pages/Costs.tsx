@@ -911,9 +911,9 @@ export function Costs() {
                         <h2 className="text-lg font-semibold capitalize">{scopeType} budgets</h2>
                         <p className="text-sm text-muted-foreground">
                           {scopeType === "company"
-                            ? "Company-wide monthly policy."
+                            ? "Company-wide budget policy."
                             : scopeType === "agent"
-                              ? "Recurring monthly spend policies for individual agents."
+                              ? "Recurring spend policies for individual agents."
                               : "Lifetime spend policies for execution-bound projects."}
                         </p>
                       </div>
